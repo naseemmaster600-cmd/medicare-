@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 
 type ChatMessage = {
@@ -402,16 +403,33 @@ export async function POST(request: Request) {
       }))
       .filter((message) => message.content.trim().length > 0);
 
-    const response = await fetch("http://127.0.0.1:11434/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "llama3.2",
-        stream: false,
-        messages: [
-          {
-            role: "system",
-            content: `You are MediCare+ AI Assistant.
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      console.error("GEMINI_API_KEY is not configured.");
+
+      return NextResponse.json(
+        {
+          error:
+            "AI assistant is not configured yet. Please try again later.",
+        },
+        { status: 503 }
+      );
+    }
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [
+              {
+                text: `You are MediCare+ AI Assistant.
 
 Answer questions about the user's saved medicines, schedules, reminders, and stock.
 Use calculatedDoseStatus as the authoritative dose status.
@@ -424,26 +442,42 @@ Reply in the same language as the user and keep answers concise.
 
 WEBSITE DATA:
 ${medicineContext}`,
+              },
+            ],
           },
-          ...conversation,
-          { role: "user", content: question },
-        ],
-      }),
-      signal: AbortSignal.timeout(60000),
-    });
+          contents: [
+            ...conversation.map((message) => ({
+              role: message.role === "assistant" ? "model" : "user",
+              parts: [{ text: message.content }],
+            })),
+            { role: "user", parts: [{ text: question }] },
+          ],
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 1024,
+          },
+        }),
+        signal: AbortSignal.timeout(60000),
+      }
+    );
 
     if (!response.ok) {
+      const errorDetails = await response.text().catch(() => "");
+      console.error("Gemini API error:", response.status, errorDetails);
+
       return NextResponse.json(
         {
-          error:
-            "AI service is unavailable. Check that Ollama is running and llama3.2 is installed.",
+          error: "AI service is unavailable right now. Please try again.",
         },
         { status: 503 }
       );
     }
 
     const data = await response.json();
-    const answer = data.message?.content;
+
+    const answer = data.candidates?.[0]?.content?.parts
+      ?.map((part: { text?: string }) => part.text ?? "")
+      .join("");
 
     if (typeof answer !== "string" || !answer.trim()) {
       return NextResponse.json(
@@ -461,8 +495,7 @@ ${medicineContext}`,
 
     return NextResponse.json(
       {
-        error:
-          "Cannot connect to the AI service. Check that Ollama is running and try again.",
+        error: "Cannot connect to the AI service right now. Please try again.",
       },
       { status: 503 }
     );
